@@ -4,14 +4,11 @@ const cheerio = require("cheerio");
 const startUrl = "https://books.toscrape.com/catalogue/page-1.html";
 
 async function fetchAndCache(url, cachePath) {
-  // Check if the page already exists in the cache
   if (fs.existsSync(cachePath)) {
     console.log(`CACHE HIT: ${cachePath}`);
-
     return fs.readFileSync(cachePath, "utf8");
   }
 
-  // Fetch the page
   const response = await fetch(url, {
     headers: {
       "User-Agent":
@@ -20,80 +17,116 @@ async function fetchAndCache(url, cachePath) {
     signal: AbortSignal.timeout(5000),
   });
 
-  // Only continue if the response was successful
   if (response.status !== 200) {
     throw new Error(`Request failed with status ${response.status} for ${url}`);
   }
 
-  // Get the HTML
   const html = await response.text();
-
-  // Make sure the cache folder exists
   fs.mkdirSync("cache", { recursive: true });
-
-  // Save the page
   fs.writeFileSync(cachePath, html);
-
   console.log(`FETCH: ${url}`);
+
+  // Politeness delay — only after a real network fetch
+  await new Promise((resolve) => setTimeout(resolve, 500));
 
   return html;
 }
 
+function extractBookRecord(html, url, sourcePage) {
+  const $ = cheerio.load(html);
+
+  const title = $("div.product_main h1").text().trim();
+  const product_url = url;
+  const price_text = $("p.price_color").text().trim();
+  const availability_text = $("p.availability").text().trim();
+
+  const ratingClass = $("p.star-rating").attr("class");
+  const rating_text = ratingClass
+    ? ratingClass.split(" ").find((className) => className !== "star-rating")
+    : null;
+
+  const descriptionElement = $("#product_description + p");
+  const description = descriptionElement.length
+    ? descriptionElement.text().trim()
+    : null;
+
+  const source_page = sourcePage;
+  const fetched_at = new Date().toISOString();
+
+  return {
+    title,
+    product_url,
+    price_text,
+    availability_text,
+    rating_text,
+    description,
+    source_page,
+    fetched_at,
+  };
+}
+
 async function main() {
   try {
-    // Store all discovered book URLs here
+    // discoveredUrls now stores { url, sourcePage } pairs, not just urls
     const discoveredUrls = [];
 
     let currentUrl = startUrl;
     let pageNumber = 0;
 
-    // Follow pages until there is no "next" link
-    // The assignment asks for the first 3 pages
     while (currentUrl && pageNumber < 3) {
       pageNumber++;
-
       console.log(`\nProcessing page ${pageNumber}: ${currentUrl}`);
 
-      // Create the cache filename
       const cachePath = `cache/catalogue-page-${pageNumber}.html`;
-
-      // Get the HTML using our reusable function
       const html = await fetchAndCache(currentUrl, cachePath);
-
-      // Load the HTML into Cheerio
       const $ = cheerio.load(html);
+      const thisPageUrl = currentUrl;
 
-      // Find every book link
       $("article.product_pod h3 a").each((index, element) => {
         const href = $(element).attr("href");
-
         if (href) {
-          // Convert relative URL into absolute URL
           const absoluteUrl = new URL(href, currentUrl).href;
-
-          discoveredUrls.push(absoluteUrl);
+          discoveredUrls.push({ url: absoluteUrl, sourcePage: thisPageUrl });
         }
       });
 
-      // Find the "next" link
       const nextHref = $("li.next a").attr("href");
-
       if (nextHref) {
-        // Convert the next page's relative URL into an absolute URL
         currentUrl = new URL(nextHref, currentUrl).href;
       } else {
-        // No next page, so stop
         currentUrl = null;
       }
     }
 
-    // Remove duplicate URLs
-    const uniqueUrls = new Set(discoveredUrls);
+    // Dedupe by url, keeping the first sourcePage seen for each
+    const seen = new Map();
+    for (const entry of discoveredUrls) {
+      if (!seen.has(entry.url)) {
+        seen.set(entry.url, entry.sourcePage);
+      }
+    }
 
-    // Print the required results
     console.log(`\ncatalogue_pages=${pageNumber}`);
     console.log(`discovered=${discoveredUrls.length}`);
-    console.log(`unique_urls=${uniqueUrls.size}`);
+    console.log(`unique_urls=${seen.size}`);
+
+    // Stage 3: visit every book page and extract a raw record
+    const records = [];
+
+    for (const [bookUrl, sourcePage] of seen.entries()) {
+      const urlParts = bookUrl.split("/").filter(Boolean);
+      const bookSlug = urlParts[urlParts.length - 2];
+      const bookCachePath = `cache/book-${bookSlug}.html`;
+
+      const bookHtml = await fetchAndCache(bookUrl, bookCachePath);
+      const record = extractBookRecord(bookHtml, bookUrl, sourcePage);
+
+      records.push(record);
+    }
+
+    console.log("\nSample record:");
+    console.log(records[0]);
+    console.log(`\ndetail_pages=${records.length}`);
   } catch (error) {
     console.error("Error:", error.message);
   }
