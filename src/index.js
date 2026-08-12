@@ -169,6 +169,7 @@ async function main() {
         seen.set(entry.url, entry.sourcePage);
       }
     }
+   
 
     console.log(`\ncatalogue_pages=${pageNumber}`);
     console.log(`discovered=${discoveredUrls.length}`);
