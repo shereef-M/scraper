@@ -17,32 +17,75 @@ const BookSchema = z.object({
 });
 
 async function fetchAndCache(url, cachePath) {
+  // Check cache first
   if (fs.existsSync(cachePath)) {
     console.log(`CACHE HIT: ${cachePath}`);
     return fs.readFileSync(cachePath, "utf8");
   }
 
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent":
-        "FlyRankInternshipA9/1.0 (+https://github.com/shereef-M/scraper)",
-    },
-    signal: AbortSignal.timeout(5000),
-  });
+  // Try at most 2 times
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let response;
 
-  if (response.status !== 200) {
-    throw new Error(`Request failed with status ${response.status} for ${url}`);
+    try {
+      response = await fetch(url, {
+        headers: {
+          "User-Agent":
+            "FlyRankInternshipA9/1.0 (+https://github.com/shereef-M/scraper)",
+        },
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch (error) {
+      // Network error or timeout
+      if (attempt === 1) {
+        console.log("Fetch failed. Retrying in 1 second...");
+
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        continue;
+      }
+
+      throw error;
+    }
+
+    // 5xx → retry once
+    if (response.status >= 500) {
+      if (attempt === 1) {
+        console.log(`Server error ${response.status}. Retrying in 1 second...`);
+
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        continue;
+      }
+
+      throw new Error(
+        `Request failed with status ${response.status} for ${url}`,
+      );
+    }
+
+    // 403, 404, etc. → do NOT retry
+    if (response.status !== 200) {
+      throw new Error(
+        `Request failed with status ${response.status} for ${url}`,
+      );
+    }
+
+    // Successful response
+    const html = await response.text();
+
+    fs.mkdirSync("cache", {
+      recursive: true,
+    });
+
+    fs.writeFileSync(cachePath, html);
+
+    console.log(`FETCH: ${url}`);
+
+    // Politeness delay
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    return html;
   }
-
-  const html = await response.text();
-  fs.mkdirSync("cache", { recursive: true });
-  fs.writeFileSync(cachePath, html);
-  console.log(`FETCH: ${url}`);
-
-  // Politeness delay — only after a real network fetch
-  await new Promise((resolve) => setTimeout(resolve, 500));
-
-  return html;
 }
 
 function parsePrice(priceText) {
