@@ -1,51 +1,99 @@
 const fs = require("fs");
+const cheerio = require("cheerio");
 
-const url = "https://books.toscrape.com/catalogue/page-1.html";
-const cachePath = "cache/catalogue-page-1.html";
+const startUrl = "https://books.toscrape.com/catalogue/page-1.html";
+
+async function fetchAndCache(url, cachePath) {
+  // Check if the page already exists in the cache
+  if (fs.existsSync(cachePath)) {
+    console.log(`CACHE HIT: ${cachePath}`);
+
+    return fs.readFileSync(cachePath, "utf8");
+  }
+
+  // Fetch the page
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent":
+        "FlyRankInternshipA9/1.0 (+https://github.com/shereef-M/scraper)",
+    },
+    signal: AbortSignal.timeout(5000),
+  });
+
+  // Only continue if the response was successful
+  if (response.status !== 200) {
+    throw new Error(`Request failed with status ${response.status} for ${url}`);
+  }
+
+  // Get the HTML
+  const html = await response.text();
+
+  // Make sure the cache folder exists
+  fs.mkdirSync("cache", { recursive: true });
+
+  // Save the page
+  fs.writeFileSync(cachePath, html);
+
+  console.log(`FETCH: ${url}`);
+
+  return html;
+}
 
 async function main() {
   try {
-    let html;
+    // Store all discovered book URLs here
+    const discoveredUrls = [];
 
-    // 1. Check if the cached file already exists
-    if (fs.existsSync(cachePath)) {
-      // 2. Read the cached file
-      html = fs.readFileSync(cachePath, "utf8");
+    let currentUrl = startUrl;
+    let pageNumber = 0;
 
-      console.log("CACHE HIT");
-    } else {
-      // 3. Fetch the website
-      const response = await fetch(url, {
-        headers: {
-          "User-Agent":
-            "FlyRankInternshipA9/1.0 (+https://github.com/shereef-M/scraper)",
-        },
+    // Follow pages until there is no "next" link
+    // The assignment asks for the first 3 pages
+    while (currentUrl && pageNumber < 3) {
+      pageNumber++;
 
-        // 4. Stop the request if it takes longer than 5 seconds
-        signal: AbortSignal.timeout(5000),
+      console.log(`\nProcessing page ${pageNumber}: ${currentUrl}`);
+
+      // Create the cache filename
+      const cachePath = `cache/catalogue-page-${pageNumber}.html`;
+
+      // Get the HTML using our reusable function
+      const html = await fetchAndCache(currentUrl, cachePath);
+
+      // Load the HTML into Cheerio
+      const $ = cheerio.load(html);
+
+      // Find every book link
+      $("article.product_pod h3 a").each((index, element) => {
+        const href = $(element).attr("href");
+
+        if (href) {
+          // Convert relative URL into absolute URL
+          const absoluteUrl = new URL(href, currentUrl).href;
+
+          discoveredUrls.push(absoluteUrl);
+        }
       });
 
-      // 5. Only continue if the server returned 200
-      if (response.status !== 200) {
-        throw new Error(`Request failed with status ${response.status}`);
+      // Find the "next" link
+      const nextHref = $("li.next a").attr("href");
+
+      if (nextHref) {
+        // Convert the next page's relative URL into an absolute URL
+        currentUrl = new URL(nextHref, currentUrl).href;
+      } else {
+        // No next page, so stop
+        currentUrl = null;
       }
-
-      // 6. Get the HTML from the response
-      html = await response.text();
-
-      // 7. Make sure the cache folder exists
-      fs.mkdirSync("cache", { recursive: true });
-
-      // 8. Save the HTML to the cache
-      fs.writeFileSync(cachePath, html);
-
-      console.log("FETCH");
     }
 
-    // 9. Print the response size
-    const size = Buffer.byteLength(html, "utf8");
+    // Remove duplicate URLs
+    const uniqueUrls = new Set(discoveredUrls);
 
-    console.log(`Response size: ${size} bytes`);
+    // Print the required results
+    console.log(`\ncatalogue_pages=${pageNumber}`);
+    console.log(`discovered=${discoveredUrls.length}`);
+    console.log(`unique_urls=${uniqueUrls.size}`);
   } catch (error) {
     console.error("Error:", error.message);
   }
