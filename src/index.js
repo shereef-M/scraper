@@ -130,6 +130,8 @@ function extractBookRecord(html, url, sourcePage) {
 async function main() {
   try {
     // discoveredUrls now stores { url, sourcePage } pairs, not just urls
+    const startTime = Date.now();
+    let cacheHits = 0;
     const discoveredUrls = [];
 
     let currentUrl = startUrl;
@@ -174,16 +176,22 @@ async function main() {
 
     // Stage 3: visit every book page and extract a raw record
     const records = [];
+    let failedPages = 0;
 
     for (const [bookUrl, sourcePage] of seen.entries()) {
-      const urlParts = bookUrl.split("/").filter(Boolean);
-      const bookSlug = urlParts[urlParts.length - 2];
-      const bookCachePath = `cache/book-${bookSlug}.html`;
+      try {
+        const urlParts = bookUrl.split("/").filter(Boolean);
+        const bookSlug = urlParts[urlParts.length - 2];
+        const bookCachePath = `cache/book-${bookSlug}.html`;
 
-      const bookHtml = await fetchAndCache(bookUrl, bookCachePath);
-      const record = extractBookRecord(bookHtml, bookUrl, sourcePage);
+        const bookHtml = await fetchAndCache(bookUrl, bookCachePath);
+        const record = extractBookRecord(bookHtml, bookUrl, sourcePage);
 
-      records.push(record);
+        records.push(record);
+      } catch (error) {
+        console.log(`SKIPPED (failed): ${bookUrl} — ${error.message}`);
+        failedPages++;
+      }
     }
     // Stage 4: normalize, validate, and split into good/bad
     const validRecords = [];
@@ -215,6 +223,22 @@ async function main() {
 
     console.log(`\nvalid_records=${uniqueValidRecords.length}`);
     console.log(`invalid_records=${invalidRecords.length}`);
+    const runReport = {
+      start_time: new Date(startTime).toISOString(),
+      duration_ms: Date.now() - startTime,
+      pages_fetched: pageNumber,
+      valid_records: uniqueValidRecords.length,
+      invalid_records: invalidRecords.length,
+      failed_pages: failedPages,
+    };
+
+    fs.writeFileSync(
+      "output/run-report.json",
+      JSON.stringify(runReport, null, 2),
+    );
+
+    console.log("\nRun report:");
+    console.log(runReport);
 
     console.log("\nSample record:");
     console.log(records[0]);
