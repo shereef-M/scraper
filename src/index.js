@@ -1,7 +1,20 @@
 const fs = require("fs");
 const cheerio = require("cheerio");
+const { z } = require("zod");
 
 const startUrl = "https://books.toscrape.com/catalogue/page-1.html";
+
+const BookSchema = z.object({
+  title: z.string().min(1),
+  product_url: z.string().url(),
+  price_gbp: z.number().positive(),
+  price_text: z.string(),
+  availability_text: z.string(),
+  rating_text: z.string().nullable(),
+  description: z.string().nullable(),
+  source_page: z.string().url(),
+  fetched_at: z.string(),
+});
 
 async function fetchAndCache(url, cachePath) {
   if (fs.existsSync(cachePath)) {
@@ -30,6 +43,12 @@ async function fetchAndCache(url, cachePath) {
   await new Promise((resolve) => setTimeout(resolve, 500));
 
   return html;
+}
+
+function parsePrice(priceText) {
+  // "£51.77" -> strip everything except digits and the decimal point
+  const cleaned = priceText.replace(/[^0-9.]/g, "");
+  return parseFloat(cleaned);
 }
 
 function extractBookRecord(html, url, sourcePage) {
@@ -123,6 +142,36 @@ async function main() {
 
       records.push(record);
     }
+    // Stage 4: normalize, validate, and split into good/bad
+    const validRecords = [];
+    const invalidRecords = [];
+
+    for (const rawRecord of records) {
+      const result = normalizeAndValidate(rawRecord);
+      if (result.valid) {
+        validRecords.push(result.record);
+      } else {
+        invalidRecords.push({ record: result.record, reason: result.reason });
+      }
+    }
+
+    // Dedupe by product_url (canonical identity) — idempotency
+    const uniqueValidRecords = Array.from(
+      new Map(validRecords.map((r) => [r.product_url, r])).values(),
+    );
+
+    fs.mkdirSync("output", { recursive: true });
+    fs.writeFileSync(
+      "output/books.json",
+      JSON.stringify(uniqueValidRecords, null, 2),
+    );
+    fs.writeFileSync(
+      "output/errors.json",
+      JSON.stringify(invalidRecords, null, 2),
+    );
+
+    console.log(`\nvalid_records=${uniqueValidRecords.length}`);
+    console.log(`invalid_records=${invalidRecords.length}`);
 
     console.log("\nSample record:");
     console.log(records[0]);
@@ -130,6 +179,25 @@ async function main() {
   } catch (error) {
     console.error("Error:", error.message);
   }
+}
+function normalizeAndValidate(rawRecord) {
+  const cleanRecord = {
+    ...rawRecord,
+    price_gbp: parsePrice(rawRecord.price_text),
+  };
+  const result = BookSchema.safeParse(cleanRecord);
+  if (result.success) {
+    return {
+      record: result.data,
+      valid: true,
+    };
+  }
+
+  return {
+    valid: false,
+    reason: result.error.message,
+    record: rawRecord,
+  };
 }
 
 main();
